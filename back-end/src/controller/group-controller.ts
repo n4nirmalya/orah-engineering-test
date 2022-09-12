@@ -7,13 +7,14 @@ import { StudentRollState } from "../entity/student-roll-state.entity";
 import { CreateGroupInput, UpdateGroupInput, UpdateGroupAfterFilterInput } from "../interface/group.interface";
 import { map } from "lodash"
 import { CreateGroupStudentInput } from "../interface/group-student.interface";
+import { Student } from "../entity/student.entity";
 
 
 export class GroupController {
   private groupRepository = getRepository(Group);
   private groupStudentRepository = getRepository(GroupStudent)
   private studentRollStateRepository = getRepository(StudentRollState)
-  private rollRepository = getRepository(Roll)
+  private studentRepository = getRepository(Student)
 
 
 
@@ -56,40 +57,51 @@ export class GroupController {
   }
 
   async getGroupStudents(request: Request, response: Response, next: NextFunction) {
-    const { query } = request
-    return
+    const { params } = request
+    const studentInfo = await this.studentRepository.createQueryBuilder("student")
+      .select(`id,first_name,last_name, first_name||" "||last_name AS full_name`)
+      .where(qb => {
+        const subQuery = qb.subQuery()
+          .select(['group_student.student_id'])
+          .from(GroupStudent, "group_student")
+          .where('group_student.group_id = :group_id')
+          .getQuery()
+        return "student.id IN" + subQuery
+      })
+      .setParameter("group_id", params.id)
+      .getRawMany()
+    return studentInfo
   }
 
 
   async runGroupFilters(request: Request, response: Response, next: NextFunction) {
-    // Task 2:
-
-    // 1. Clear out the groups (delete all the students from the groups)
     this.groupStudentRepository.clear()
-
-    // 2. For each group, query the student rolls to see which students match the filter for the group
     const groups = await this.groupRepository.find()
-    for(let group of groups){
+    for (let group of groups) {
       const roll_states = group.roll_states.split(',')
       const numberOfWeeks = group.number_of_weeks
-      const numberOfDays = numberOfWeeks * 7
+      const daysPerWeek = 7
+      const numberOfDays = numberOfWeeks * daysPerWeek
       const pastDate = new Date(new Date().setDate(new Date().getDate() - numberOfDays));
-      var rolls = await this.rollRepository.find({
-        where:{
-          completed_at: MoreThanOrEqual(pastDate.toISOString()),
-        }
-      })
-      const rollIds = rolls.map(roll => roll.id)
       var studentRollStates = await this.studentRollStateRepository
-      .createQueryBuilder('studentRollState')
+        .createQueryBuilder('studentRollState')
         .select("COUNT(studentRollState.student_id) AS numberOfIncident, student_id")
         .where({
-          roll_id: In(rollIds),
           state: In(roll_states)
         })
+        .andWhere(qb => {
+          const subQuery = qb
+            .subQuery()
+            .select(['roll.id'])
+            .from(Roll, "roll")
+            .where("roll.completed_at > :completed_at")
+            .getQuery()
+          return `studentRollState.roll_id IN` + subQuery
+        })
+        .setParameter("completed_at", pastDate.toISOString())
         .groupBy('studentRollState.student_id')
         .getRawMany();
-      const filteredUserWhoMeetIncident = studentRollStates.filter(student => group.ltmt === ">" ? student.numberOfIncident > group.incidents : student.numberOfIncident < group.incidents )
+      const filteredUserWhoMeetIncident = studentRollStates.filter(student => group.ltmt === ">" ? student.numberOfIncident > group.incidents : student.numberOfIncident < group.incidents)
       const groupStudent: StudentRollState[] = map(filteredUserWhoMeetIncident, (param) => {
         const createStudentRollStateInput: CreateGroupStudentInput = {
           group_id: group.id,
@@ -102,15 +114,16 @@ export class GroupController {
         return groupStudent
       })
       this.groupStudentRepository.save(groupStudent)
-      const updateGroupAfterFilterInput: UpdateGroupAfterFilterInput = {
-        id:group.id,
-        run_at:new Date(),
-        student_count: filteredUserWhoMeetIncident.length
+      if (filteredUserWhoMeetIncident.length) {
+        const updateGroupAfterFilterInput: UpdateGroupAfterFilterInput = {
+          id: group.id,
+          run_at: new Date(),
+          student_count: filteredUserWhoMeetIncident.length
+        }
+        this.groupRepository.save(updateGroupAfterFilterInput)
       }
-      this.groupRepository.save(updateGroupAfterFilterInput)
     }
     return studentRollStates
 
-    // 3. Add the list of students that match the filter to the group
   }
 }

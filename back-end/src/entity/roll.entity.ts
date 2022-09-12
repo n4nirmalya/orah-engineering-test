@@ -14,7 +14,7 @@ export class Roll {
 
   public prepareToCreate(input: CreateRollInput) {
     this.name = input.name
-    if (input.completed_at !== undefined) this.completed_at = input.completed_at
+    if (input.completed_at !== undefined) this.completed_at = new Date(input.completed_at)
   }
 
   public prepareToUpdate(input: UpdateRollInput) {

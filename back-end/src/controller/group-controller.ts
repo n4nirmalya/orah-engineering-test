@@ -1,5 +1,5 @@
 import { NextFunction, Request, Response } from "express"
-import { getRepository, In, MoreThanOrEqual } from "typeorm"
+import { getRepository, In } from "typeorm"
 import { GroupStudent } from "../entity/group-student.entity";
 import { Group } from "../entity/group.entity"
 import { Roll } from "../entity/roll.entity"
@@ -77,6 +77,8 @@ export class GroupController {
   async runGroupFilters(request: Request, response: Response, next: NextFunction) {
     this.groupStudentRepository.clear()
     const groups = await this.groupRepository.find()
+    console.log('groups', groups)
+    const studentRollStateResponse = []
     for (let group of groups) {
       const roll_states = group.roll_states.split(',')
       const numberOfWeeks = group.number_of_weeks
@@ -94,15 +96,15 @@ export class GroupController {
             .subQuery()
             .select(['roll.id'])
             .from(Roll, "roll")
-            .where("roll.completed_at > :completed_at")
+            .where("roll.completed_at >= :completed_at")
             .getQuery()
           return `studentRollState.roll_id IN` + subQuery
         })
         .setParameter("completed_at", pastDate.toISOString())
         .groupBy('studentRollState.student_id')
+        .andHaving(`${group.ltmt === ">" ? "numberOfIncident >" : "numberOfIncident <"}${group.incidents}`)
         .getRawMany();
-      const filteredUserWhoMeetIncident = studentRollStates.filter(student => group.ltmt === ">" ? student.numberOfIncident > group.incidents : student.numberOfIncident < group.incidents)
-      const groupStudent: StudentRollState[] = map(filteredUserWhoMeetIncident, (param) => {
+      const groupStudent: StudentRollState[] = map(studentRollStates, (param) => {
         const createStudentRollStateInput: CreateGroupStudentInput = {
           group_id: group.id,
           student_id: param.student_id,
@@ -114,16 +116,16 @@ export class GroupController {
         return groupStudent
       })
       this.groupStudentRepository.save(groupStudent)
-      if (filteredUserWhoMeetIncident.length) {
+      if (studentRollStates.length) {
         const updateGroupAfterFilterInput: UpdateGroupAfterFilterInput = {
           id: group.id,
           run_at: new Date(),
-          student_count: filteredUserWhoMeetIncident.length
+          student_count: studentRollStates.length
         }
         this.groupRepository.save(updateGroupAfterFilterInput)
       }
+      studentRollStateResponse.push({incidentCount:studentRollStates,group_id:group.id,incidentAllowed:group.incidents})
     }
-    return studentRollStates
-
+    return studentRollStateResponse
   }
 }
